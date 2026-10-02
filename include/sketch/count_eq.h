@@ -582,16 +582,17 @@ static inline std::pair<uint64_t, uint64_t> count_gtlt_bytes(const uint8_t *SK_R
         auto lhv = _mm512_loadu_si512((__m512i *)lhs + i);
         auto rhv = _mm512_loadu_si512((__m512i *)rhs + i);
         auto lhsd = _mm512_srli_epi32(lhv, 24), rhsd =  _mm512_srli_epi32(rhv, 24);
+        // Shifting byte 0 to the top of the lane sets the sign bit, so the comparisons are unsigned.
         auto lhsu = _mm512_slli_epi32(lhv, 24), rhsu = _mm512_slli_epi32(rhv, 24);
         auto ulmask = _mm512_set1_epi32(0x00FF0000u), llmask = _mm512_set1_epi32(0x0000FF00u);
-        lhgt += popcount((uint64_t(_mm512_cmpgt_epi32_mask(lhsd, rhsd)) << 48) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(lhv & ulmask, rhv & ulmask)) << 32) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(lhv & llmask, rhv & llmask)) << 16) |
-                       _mm512_cmpgt_epi32_mask(lhsu, rhsu));
-        rhgt += popcount((uint64_t(_mm512_cmpgt_epi32_mask(rhsd, lhsd)) << 48) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(rhv & ulmask, lhv & ulmask)) << 32) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(rhv & llmask, lhv & llmask)) << 16) |
-                       _mm512_cmpgt_epi32_mask(rhsu, lhsu));
+        lhgt += popcount((uint64_t(_mm512_cmpgt_epu32_mask(lhsd, rhsd)) << 48) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(lhv & ulmask, rhv & ulmask)) << 32) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(lhv & llmask, rhv & llmask)) << 16) |
+                       _mm512_cmpgt_epu32_mask(lhsu, rhsu));
+        rhgt += popcount((uint64_t(_mm512_cmpgt_epu32_mask(rhsd, lhsd)) << 48) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(rhv & ulmask, lhv & ulmask)) << 32) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(rhv & llmask, lhv & llmask)) << 16) |
+                       _mm512_cmpgt_epu32_mask(rhsu, lhsu));
     }
     for(size_t i = nsimd * nper; i < n; ++i) {
         lhgt += lhs[i] > rhs[i];
@@ -648,16 +649,17 @@ static inline std::pair<uint64_t, uint64_t> count_gtlt_bytes_aligned(const uint8
         auto lhv = _mm512_load_si512((__m512i *)lhs + i);
         auto rhv = _mm512_load_si512((__m512i *)rhs + i);
         auto lhsd = _mm512_srli_epi32(lhv, 24), rhsd =  _mm512_srli_epi32(rhv, 24);
+        // Shifting byte 0 to the top of the lane sets the sign bit, so the comparisons are unsigned.
         auto lhsu = _mm512_slli_epi32(lhv, 24), rhsu = _mm512_slli_epi32(rhv, 24);
         auto ulmask = _mm512_set1_epi32(0x00FF0000u), llmask = _mm512_set1_epi32(0x0000FF00u);
-        lhgt += popcount((uint64_t(_mm512_cmpgt_epi32_mask(lhsd, rhsd)) << 48) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(lhv & ulmask, rhv & ulmask)) << 32) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(lhv & llmask, rhv & llmask)) << 16) |
-                       _mm512_cmpgt_epi32_mask(lhsu, rhsu));
-        rhgt += popcount((uint64_t(_mm512_cmpgt_epi32_mask(rhsd, lhsd)) << 48) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(rhv & ulmask, lhv & ulmask)) << 32) |
-                       (uint64_t(_mm512_cmpgt_epi32_mask(rhv & llmask, lhv & llmask)) << 16) |
-                       _mm512_cmpgt_epi32_mask(rhsu, lhsu));
+        lhgt += popcount((uint64_t(_mm512_cmpgt_epu32_mask(lhsd, rhsd)) << 48) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(lhv & ulmask, rhv & ulmask)) << 32) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(lhv & llmask, rhv & llmask)) << 16) |
+                       _mm512_cmpgt_epu32_mask(lhsu, rhsu));
+        rhgt += popcount((uint64_t(_mm512_cmpgt_epu32_mask(rhsd, lhsd)) << 48) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(rhv & ulmask, lhv & ulmask)) << 32) |
+                       (uint64_t(_mm512_cmpgt_epu32_mask(rhv & llmask, lhv & llmask)) << 16) |
+                       _mm512_cmpgt_epu32_mask(rhsu, lhsu));
     }
     for(size_t i = nsimd * nper; i < n; ++i) {
         lhgt += lhs[i] > rhs[i];
@@ -799,12 +801,13 @@ static inline std::pair<uint64_t, uint64_t> count_gtlt_shorts(const uint16_t *co
         __m512i lhv, rhv, lhsu, rhsu;
         lhv = _mm512_loadu_si512((__m512i *)lhs + i);
         rhv = _mm512_loadu_si512((__m512i *)rhs + i);
+        // Shifting the low short to the top of the lane sets the sign bit, so the comparisons are unsigned.
         lhsu = _mm512_slli_epi32(lhv, 16);
         rhsu = _mm512_slli_epi32(rhv, 16);
         lhv = _mm512_srli_epi32(lhv, 16);
         rhv = _mm512_srli_epi32(rhv, 16);
-        lhgt += popcount((_mm512_cmpgt_epi32_mask(lhsu, rhsu) << 16) | _mm512_cmpgt_epi32_mask(lhv, rhv));
-        rhgt += popcount((_mm512_cmpgt_epi32_mask(rhsu, lhsu) << 16) | _mm512_cmpgt_epi32_mask(rhv, lhv));
+        lhgt += popcount((_mm512_cmpgt_epu32_mask(lhsu, rhsu) << 16) | _mm512_cmpgt_epu32_mask(lhv, rhv));
+        rhgt += popcount((_mm512_cmpgt_epu32_mask(rhsu, lhsu) << 16) | _mm512_cmpgt_epu32_mask(rhv, lhv));
     }
     for(size_t i = nsimd * nper; i < n; ++i) {
         lhgt += lhs[i] > rhs[i];
@@ -1040,10 +1043,11 @@ static inline std::pair<uint64_t, uint64_t> count_gtlt_shorts_aligned(const uint
     for(size_t i = 0; i < nsimd; ++i) {
         __m512i lhv, rhv, lhsu, rhsu;
         lhv = _mm512_load_si512((__m512i *)lhs + i); rhv = _mm512_load_si512((__m512i *)rhs + i);
+        // Shifting the low short to the top of the lane sets the sign bit, so the comparisons are unsigned.
         lhsu = _mm512_slli_epi32(lhv, 16); rhsu = _mm512_slli_epi32(rhv, 16);
         lhv = _mm512_srli_epi32(lhv, 16);  rhv = _mm512_srli_epi32(rhv, 16);
-        lhgt += popcount((_mm512_cmpgt_epi32_mask(lhsu, rhsu) << 16) | _mm512_cmpgt_epi32_mask(lhv, rhv));
-        rhgt += popcount((_mm512_cmpgt_epi32_mask(rhsu, lhsu) << 16) | _mm512_cmpgt_epi32_mask(rhv, lhv));
+        lhgt += popcount((_mm512_cmpgt_epu32_mask(lhsu, rhsu) << 16) | _mm512_cmpgt_epu32_mask(lhv, rhv));
+        rhgt += popcount((_mm512_cmpgt_epu32_mask(rhsu, lhsu) << 16) | _mm512_cmpgt_epu32_mask(rhv, lhv));
     }
     for(size_t i = nsimd * nper; i < n; ++i) {
         lhgt += lhs[i] > rhs[i];
