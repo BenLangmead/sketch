@@ -404,6 +404,8 @@ struct bmh_t {
     void reset() {
         hvals_.reset();
         heap_.clear();
+        std::fill(track_ids_.begin(), track_ids_.end(), IDType(0));
+        std::fill(idcounts_.begin(), idcounts_.end(), FT(0));
         total_updates_ = 0;
         total_weight_carry_ = total_weight_ = 0.;
     }
