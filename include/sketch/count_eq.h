@@ -254,8 +254,8 @@ static inline size_t count_eq_nibbles(const uint8_t *SK_RESTRICT lhs, const uint
     for(size_t i = 0; i < nsimd; ++i) {
         auto lhv = _mm256_loadu_si256((__m256i *)lhs + i), rhv = _mm256_loadu_si256((__m256i *)rhs + i);
         auto lomask = _mm256_set1_epi8(0xF), himask = _mm256_set1_epi8(0x0F);
-        uint64_t mm1 = uint64_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(lhv & lomask, rhv & lomask))) << 32;
-        mm1 |= _mm256_movemask_epi8(_mm256_cmpeq_epi8(lhv & himask, rhv & himask));
+        uint64_t mm1 = uint64_t(uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(lhv & lomask, rhv & lomask)))) << 32;
+        mm1 |= uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(lhv & himask, rhv & himask)));
         ret += popcount(mm1);
     }
     for(size_t i = nsimd * sizeof(__m256) / sizeof(char); i < n; ++i) {
@@ -321,11 +321,13 @@ static inline size_t count_eq_bytes(const uint8_t *SK_RESTRICT lhs, const uint8_
 #elif __AVX2__
     const size_t nsimd = (n / (sizeof(__m256) / sizeof(char)));
     const size_t nsimd4 = (nsimd / 4) * 4;
+    // _mm256_movemask_epi8 returns a signed int, so each mask goes through uint32_t to keep
+    // byte 31's bit from sign-extending into the other mask's half of the 64-bit word.
     for(size_t i = 0; i < nsimd4; i += 4) {
-        const uint64_t v0 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i), _mm256_loadu_si256((__m256i *)rhs + i)));
-        ret += popcount((v0 << 32) | _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i + 1), _mm256_loadu_si256((__m256i *)rhs + i + 1))));
-        const uint64_t v2 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i + 2), _mm256_loadu_si256((__m256i *)rhs + i + 2)));
-        ret += popcount((v2 << 32) | _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i + 3), _mm256_loadu_si256((__m256i *)rhs + i + 3))));
+        const uint64_t v0 = uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i), _mm256_loadu_si256((__m256i *)rhs + i))));
+        ret += popcount((v0 << 32) | uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i + 1), _mm256_loadu_si256((__m256i *)rhs + i + 1)))));
+        const uint64_t v2 = uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i + 2), _mm256_loadu_si256((__m256i *)rhs + i + 2))));
+        ret += popcount((v2 << 32) | uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i + 3), _mm256_loadu_si256((__m256i *)rhs + i + 3)))));
     }
     for(size_t i = nsimd4; i < nsimd; ++i)
         ret += popcount(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_loadu_si256((__m256i *)lhs + i), _mm256_loadu_si256((__m256i *)rhs + i))));
@@ -381,11 +383,13 @@ static inline size_t count_eq_bytes_aligned(const uint8_t *SK_RESTRICT lhs, cons
 #elif __AVX2__
     const size_t nsimd = (n / (sizeof(__m256) / sizeof(char)));
     const size_t nsimd4 = (nsimd / 4) * 4;
+    // _mm256_movemask_epi8 returns a signed int, so each mask goes through uint32_t to keep
+    // byte 31's bit from sign-extending into the other mask's half of the 64-bit word.
     for(size_t i = 0; i < nsimd4; i += 4) {
-        const uint64_t v0 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i), _mm256_load_si256((__m256i *)rhs + i)));
-        ret += popcount((v0 << 32) | _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i + 1), _mm256_load_si256((__m256i *)rhs + i + 1))));
-        const uint64_t v2 = _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i + 2), _mm256_load_si256((__m256i *)rhs + i + 2)));
-        ret += popcount((v2 << 32) | _mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i + 3), _mm256_load_si256((__m256i *)rhs + i + 3))));
+        const uint64_t v0 = uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i), _mm256_load_si256((__m256i *)rhs + i))));
+        ret += popcount((v0 << 32) | uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i + 1), _mm256_load_si256((__m256i *)rhs + i + 1)))));
+        const uint64_t v2 = uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i + 2), _mm256_load_si256((__m256i *)rhs + i + 2))));
+        ret += popcount((v2 << 32) | uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i + 3), _mm256_load_si256((__m256i *)rhs + i + 3)))));
     }
     for(size_t i = nsimd4; i < nsimd; ++i)
         ret += popcount(_mm256_movemask_epi8(_mm256_cmpeq_epi8(_mm256_load_si256((__m256i *)lhs + i), _mm256_load_si256((__m256i *)rhs + i))));
