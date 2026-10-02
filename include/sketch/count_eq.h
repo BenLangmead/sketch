@@ -528,11 +528,11 @@ template<> inline std::pair<uint64_t, uint64_t> count_gtlt(const float *SK_RESTR
         rhgt += popcount((rcmp0 << 24) | (rcmp1 << 16) | (rcmp2 << 8) | rcmp3);
     }
     for(size_t i = nsimd4; i < nsimd; ++i) {
-        auto lhv = _mm256_loadu_ps(lhs + i * 4), rhv = _mm256_loadu_ps(rhs + i * 4);
+        auto lhv = _mm256_loadu_ps(lhs + i * 8), rhv = _mm256_loadu_ps(rhs + i * 8);
         lhgt += popcount(_mm256_movemask_ps(_mm256_cmp_ps(lhv, rhv, _CMP_GT_OQ)));
         rhgt += popcount(_mm256_movemask_ps(_mm256_cmp_ps(rhv, lhv, _CMP_GT_OQ)));
     }
-    for(size_t i = nsimd * 4; i < n; ++i) {
+    for(size_t i = nsimd * 8; i < n; ++i) {
         lhgt += lhs[i] > rhs[i];
         rhgt += rhs[i] > lhs[i];
     }
