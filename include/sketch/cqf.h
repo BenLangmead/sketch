@@ -357,6 +357,8 @@ public:
     // it drops low remainder bits, which is inexact even at KEY_BITS = 64.
     static constexpr bool exact = (KEY_BITS >= 64) && (RSTORE_BITS == 0);
     static constexpr uint64_t SAT = VAL_BITS >= 64 ? ~uint64_t(0): ((uint64_t(1) << VAL_BITS) - 1);
+    // the reduced key: parts() splits these bits into (home, remainder)
+    static constexpr uint64_t KEYMASK = KEY_BITS >= 64 ? ~uint64_t(0): ((uint64_t(1) << KEY_BITS) - 1);
 private:
     uint32_t q_ = 0, r_ = 0;
     uint32_t rs_ = 0;         // STORED remainder width. Truncation mode
@@ -809,69 +811,81 @@ public:
     }
 
     // ---- bulk load (paper sec 3.5 observation on this rank-ordered core):
-    // keys presented in ASCENDING full-hash order have ascending homes, so
-    // each new home appends its run at the live-region end -- no shifting.
-    // *It dereferences to (hash, count) pairs sorted by hash ascending.
-    // Existing homes take the normal local in-run path (bump / sorted
-    // insert, which may shift locally); a mid-batch grow resumes sorted.
-    // The append cursor is validated before each use; any violation falls
-    // back to the general rank/select position.
+    // keys presented in ascending reduced-key order (hv & KEYMASK, i.e.
+    // ascending (home, remainder)) have ascending homes, so each new home
+    // appends its run right after the previous one, with no shifting and no
+    // select. *It dereferences to (hash, count) pairs. Any order is
+    // correct: the append cursor is used only when the previous home in
+    // index order is the one just appended (checked by rank), and every
+    // other new home takes the general rank/select position. Existing
+    // homes take the normal local in-run path (bump / sorted insert, which
+    // may shift locally); a grow re-decomposes and retries the same key.
     template<typename It>
     void insert_sorted_counts(It first, It last) {
-        uint64_t cursor = ~uint64_t(0); // next append slot; ~0 = derive
+        // cursor: the slot just past the run last appended for a new home;
+        // cursor_rnk: the number of occupied homes up to and including that
+        // home. A new home of rank cursor_rnk has that run as its
+        // predecessor, so select(rank - 1) + 1 == cursor.
+        uint64_t cursor = ~uint64_t(0), cursor_rnk = 0;
         for(; first != last; ++first) {
-            grow_if_full();
             const uint64_t hv = first->first;
-            const uint64_t count_ = first->second;
-            const auto [fq, fr] = parts(hv);
-            const uint64_t frq = frs(fr);
-            if(occ_get(fq)) {
-                auto [s, e] = run_of(fq);
-                uint64_t p = s;
-                for(;;) {
-                    const uint64_t rv = rem(p);
-                    if(rv == frq) { // membership: bump the counter
-                        if(cnt(p) < SAT) set_cnt(p, std::min<uint64_t>(SAT, cnt(p) + count_));
-                        break;
-                    }
-                    if(p == e || rv > frq) {
-                        if(p == e && rem(p) < frq) ++p; // append beyond runend
-                        const uint64_t empty = first_empty(p);
-                        shift_range_right(p, empty); // refreshes the runend dir
-                        set_slot(p, fr, std::min<uint64_t>(count_, SAT)); ++used_;
-                        if(p == e + 1) { // appended past old runend: move runend
-                            re_clear(e);
-                            re_set(p);
-                            runend_dir_.refresh(re_w(), runend_words_, e, p);
+            const uint64_t count_ = std::min<uint64_t>(first->second, SAT);
+            if(count_ == 0) continue; // a zero count would leave a dead slot marked as a run
+            for(;;) {
+                const uint32_t q0 = q_;
+                grow_if_full();
+                if(q_ != q0) cursor = ~uint64_t(0);
+                const auto [fq, fr] = parts(hv);
+                const uint64_t frq = frs(fr);
+                if(occ_get(fq)) {
+                    cursor = ~uint64_t(0); // a shift may move the cursor's run
+                    auto [s, e] = run_of(fq);
+                    uint64_t p = s;
+                    bool bumped = false;
+                    for(;;) {
+                        const uint64_t rv = rem(p);
+                        if(rv == frq) { // membership: bump the counter, saturating
+                            const uint64_t c = cnt(p);
+                            set_cnt(p, c + std::min<uint64_t>(count_, SAT - c));
+                            bumped = true;
+                            break;
                         }
-                        break;
+                        if(p == e || rv > frq) break;
+                        ++p;
                     }
-                    ++p;
+                    if(bumped) break;
+                    if(p == e && rem(p) < frq) ++p; // append beyond runend
+                    const uint64_t empty = first_empty(p);
+                    if(HEDLEY_UNLIKELY(empty == ~uint64_t(0))) { grow(); continue; }
+                    shift_range_right(p, empty); // refreshes the runend dir
+                    set_slot(p, fr, count_); ++used_;
+                    if(p == e + 1) { // appended past old runend: move runend
+                        re_clear(e);
+                        re_set(p);
+                        runend_dir_.refresh(re_w(), runend_words_, e, p);
+                    }
+                    break;
                 }
-                cursor = ~uint64_t(0); // a shift may have moved the end
-                continue;
-            }
-            uint64_t pos;
-            if(cursor != ~uint64_t(0) && cursor < xnslots_ && !slot_live(cursor)
-               && (cursor == 0 || slot_live(cursor - 1))) {
-                pos = cursor; // validated append point: no shift needed
-            } else {
                 const uint64_t rnk = occ_dir_.rank1(occ_w(), fq); // occupied homes before fq
-                pos = rnk == 0 ? 0: runend_dir_.select1(re_w(), rnk - 1) + 1;
+                const uint64_t pos = cursor != ~uint64_t(0) && rnk == cursor_rnk
+                    ? cursor
+                    : rnk == 0 ? 0: runend_dir_.select1(re_w(), rnk - 1) + 1;
+                if(HEDLEY_UNLIKELY(pos >= xnslots_)) { grow(); cursor = ~uint64_t(0); continue; }
+                if(slot_live(pos)) { // the next home's run starts here: shift it
+                    const uint64_t empty = first_empty(pos);
+                    if(HEDLEY_UNLIKELY(empty == ~uint64_t(0))) { grow(); cursor = ~uint64_t(0); continue; }
+                    shift_range_right(pos, empty); // refreshes the runend dir
+                }
+                set_slot(pos, fr, count_); ++used_;
+                ++ndistinct_;
+                occ_set(fq);
+                occ_dir_.refresh(occ_w(), occ_words_, fq, fq);
+                re_set(pos);
+                runend_dir_.refresh(re_w(), runend_words_, pos, pos);
+                cursor = pos + 1;
+                cursor_rnk = rnk + 1;
+                break;
             }
-            if(HEDLEY_UNLIKELY(pos >= xnslots_)) { grow(); continue; }
-            if(slot_live(pos)) { // defensive: not a clean append; general path
-                const uint64_t empty = first_empty(pos);
-                if(HEDLEY_UNLIKELY(empty == ~uint64_t(0))) { grow(); continue; }
-                shift_range_right(pos, empty); // refreshes the runend dir
-            }
-            set_slot(pos, fr, std::min<uint64_t>(count_, SAT)); ++used_;
-            ++ndistinct_;
-            occ_set(fq);
-            occ_dir_.refresh(occ_w(), occ_words_, fq, fq);
-            re_set(pos);
-            runend_dir_.refresh(re_w(), runend_words_, pos, pos);
-            cursor = pos + 1;
         }
     }
     // hash-only convenience wrapper (count 1 per hash)
@@ -887,19 +901,19 @@ public:
     // outlives the call, so queries are consistent when it returns.
     template<typename It>
     void insert_buffered(It first, It last, size_t threshold = 8192) {
-        std::unordered_map<uint64_t, uint64_t> buf; // hash -> pending count
+        std::unordered_map<uint64_t, uint64_t> buf; // reduced key -> pending count
         buf.reserve(threshold * 2);
         auto flush = [&]() {
             if(buf.empty()) return;
             std::vector<std::pair<uint64_t, uint64_t>> keys;
             keys.reserve(buf.size());
             for(auto &kv: buf) keys.emplace_back(kv.first, kv.second);
-            std::sort(keys.begin(), keys.end());
+            std::sort(keys.begin(), keys.end()); // reduced-key order == (home, remainder) order
             insert_sorted_counts(keys.begin(), keys.end());
             buf.clear();
         };
         for(; first != last; ++first) {
-            ++buf[hf_(*first)];
+            ++buf[hf_(*first) & KEYMASK]; // parts() reads only the low KEY_BITS bits
             if(buf.size() >= threshold) flush();
         }
         flush();
