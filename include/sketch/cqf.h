@@ -920,8 +920,12 @@ public:
     }
 
     // insert a known-absent KEY with count: decomposes per attempt and
-    // grows+retries if the table tail is full (no empty slot to shift into)
+    // grows+retries if the table tail is full (no empty slot to shift into).
+    // The count saturates at SAT (callers may pass counts from a filter
+    // with wider counters); a zero count inserts nothing.
     void insert_new_key(uint64_t hv, uint64_t count_) {
+        count_ = std::min<uint64_t>(count_, SAT);
+        if(HEDLEY_UNLIKELY(count_ == 0)) return; // would leave a dead slot marked as a run
         for(;;) {
             const auto [fq, fr] = parts(hv);
             const uint64_t frq = frs(fr);
