@@ -12,6 +12,8 @@
 #include <type_traits>
 #include <cstdint>
 #include <array>
+#include <algorithm>
+#include <cstring>
 #ifndef NO_BLAZE
 #include "blaze/Math.h"
 #endif
@@ -161,16 +163,58 @@ struct SIMDTypes;
 #if __AVX512F__
 #define DECMAX64
 #else
+// Unsigned 64-bit lane max/min for targets without AVX-512 (which has
+// _mm512_max_epu64). AVX2 and SSE4.2 compare signed 64-bit lanes, so both
+// operands are biased by 2^63 first. Other targets go through a uint64_t
+// array with memcpy: writing the lanes through a uint64_t pointer into a
+// vector-typed local breaks strict aliasing, and GCC then returns the
+// first operand unchanged.
+#if __AVX2__
+static INLINE __m256i vec_max_epu64_(__m256i a, __m256i b) {
+    const __m256i bias = _mm256_set1_epi64x(int64_t(uint64_t(1) << 63));
+    const __m256i gt = _mm256_cmpgt_epi64(_mm256_xor_si256(a, bias), _mm256_xor_si256(b, bias));
+    return _mm256_blendv_epi8(b, a, gt);
+}
+static INLINE __m256i vec_min_epu64_(__m256i a, __m256i b) {
+    const __m256i bias = _mm256_set1_epi64x(int64_t(uint64_t(1) << 63));
+    const __m256i gt = _mm256_cmpgt_epi64(_mm256_xor_si256(a, bias), _mm256_xor_si256(b, bias));
+    return _mm256_blendv_epi8(a, b, gt);
+}
+#endif
+#if __SSE4_2__
+static INLINE __m128i vec_max_epu64_(__m128i a, __m128i b) {
+    const __m128i bias = _mm_set1_epi64x(int64_t(uint64_t(1) << 63));
+    const __m128i gt = _mm_cmpgt_epi64(_mm_xor_si128(a, bias), _mm_xor_si128(b, bias));
+    return _mm_blendv_epi8(b, a, gt);
+}
+static INLINE __m128i vec_min_epu64_(__m128i a, __m128i b) {
+    const __m128i bias = _mm_set1_epi64x(int64_t(uint64_t(1) << 63));
+    const __m128i gt = _mm_cmpgt_epi64(_mm_xor_si128(a, bias), _mm_xor_si128(b, bias));
+    return _mm_blendv_epi8(a, b, gt);
+}
+#endif
+template<typename T>
+static INLINE T vec_max_epu64_(T a, T b) {
+    uint64_t x[sizeof(T) / sizeof(uint64_t)], y[sizeof(T) / sizeof(uint64_t)];
+    std::memcpy(x, &a, sizeof(T)); std::memcpy(y, &b, sizeof(T));
+    for(unsigned i = 0; i < sizeof(T) / sizeof(uint64_t); ++i) x[i] = std::max(x[i], y[i]);
+    std::memcpy(&a, x, sizeof(T));
+    return a;
+}
+template<typename T>
+static INLINE T vec_min_epu64_(T a, T b) {
+    uint64_t x[sizeof(T) / sizeof(uint64_t)], y[sizeof(T) / sizeof(uint64_t)];
+    std::memcpy(x, &a, sizeof(T)); std::memcpy(y, &b, sizeof(T));
+    for(unsigned i = 0; i < sizeof(T) / sizeof(uint64_t); ++i) x[i] = std::min(x[i], y[i]);
+    std::memcpy(&a, x, sizeof(T));
+    return a;
+}
     #define DECMAX64 \
     static INLINE typename SIMDTypes<ValueType>::Type max(typename SIMDTypes<ValueType>::Type ret, typename SIMDTypes<ValueType>::Type rhs) { \
-        for(unsigned i = 0; i < sizeof(Type) / sizeof(uint64_t); ++i) \
-            ((uint64_t *)&ret)[i] = std::max(((uint64_t *)&ret)[i], ((uint64_t *)&rhs)[i]); \
-        return ret; \
+        return vec_max_epu64_(ret, rhs); \
     } \
     static INLINE typename SIMDTypes<ValueType>::Type min(typename SIMDTypes<ValueType>::Type ret, typename SIMDTypes<ValueType>::Type rhs) { \
-        for(unsigned i = 0; i < sizeof(Type) / sizeof(uint64_t); ++i) \
-            ((uint64_t *)&ret)[i] = std::min(((uint64_t *)&ret)[i], ((uint64_t *)&rhs)[i]); \
-        return ret; \
+        return vec_min_epu64_(ret, rhs); \
     }
 #endif
 
