@@ -1198,9 +1198,17 @@ public:
         uint32_t header[3];
         CR(fp, header, sizeof(header));
         if(header[0] != MAGIC) throw std::runtime_error("[cqf] bad magic: not a CQF4 (home-anchored) sketch");
-        if(header[1] != q_ || header[2] != VAL_BITS) init(header[1]);
+        // the payload layout depends on VAL_BITS and q, so a file written by
+        // another counter width or with an out-of-range q cannot be parsed
+        if(header[2] != VAL_BITS)
+            throw std::runtime_error(std::string("[cqf] VAL_BITS mismatch: file has ") + std::to_string(header[2]) + ", this type has " + std::to_string(VAL_BITS));
+        if(header[1] < 2 || header[1] > 40 || uint64_t(header[1]) + 2 > uint64_t(KEY_BITS))
+            throw std::runtime_error(std::string("[cqf] invalid q in file: ") + std::to_string(header[1]));
+        if(header[1] != q_) init(header[1]);
         CR(fp, &used_, sizeof(used_));
         CR(fp, &ndistinct_, sizeof(ndistinct_));
+        if(used_ > xnslots_ || ndistinct_ > nslots_ || ndistinct_ > used_)
+            throw std::runtime_error("[cqf] corrupt header: slot counts exceed the table size");
         if(fuse_) {
             std::vector<uint64_t, common::Allocator<uint64_t>> rt(ceil_div(xnslots_ * r_, uint64_t(word_bits)) + 1);
             std::vector<uint64_t, common::Allocator<uint64_t>> ct(ceil_div(xnslots_ * VAL_BITS, uint64_t(word_bits)) + 1);
