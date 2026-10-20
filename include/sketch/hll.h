@@ -852,7 +852,11 @@ class hllbase_t {
 protected:
     std::vector<uint8_t, common::Allocator<uint8_t>> core_;
     mutable double                          value_;
-    mutable std::array<uint32_t, 64>        counts_{}; // cached register histogram (valid with value_)
+    mutable std::array<uint32_t, 64>        counts_{}; // cached register histogram
+    // counts_ holds the histogram of the current registers. Only sum() and
+    // parsum() set it; value_ can also come from a file, so a valid value_
+    // does not imply a valid counts_.
+    mutable bool                            counts_valid_ = false;
     uint32_t                                   np_;
     EstimationMethod                        estim_;
     JointEstimationMethod                  jestim_;
@@ -911,13 +915,18 @@ public:
     // Call sum to recalculate if you have changed contents.
     void sum() const noexcept {
         counts_ = detail::sum_counts(core_); // std::array<uint32_t, 64>
+        counts_valid_ = true;
         value_ = detail::calculate_estimate(counts_, estim_, m(), np_, alpha());
     }
     void csum() const noexcept {if(!is_calculated()) sum();}
-    // cached per-register histogram (valid while is_calculated); joint
-    // estimators reuse it instead of re-histogramming the sketch per
-    // comparison
-    const std::array<uint32_t, 64> &ccounts() const noexcept {csum(); return counts_;}
+    // cached per-register histogram; joint estimators reuse it instead of
+    // re-histogramming the sketch per comparison. Recomputed when the
+    // sketch was modified (value_ reset) or when value_ was set without a
+    // histogram (read from a file).
+    const std::array<uint32_t, 64> &ccounts() const noexcept {
+        if(!counts_valid_ || !is_calculated()) sum();
+        return counts_;
+    }
 
     // Returns cardinality estimate. Sums if not calculated yet.
     double creport() const noexcept {
@@ -1028,6 +1037,8 @@ public:
         kt_for(nthreads, detail::parsum_helper<decltype(core_)>, &data, nr);
         uint64_t counts[64];
         std::memcpy(counts, acounts, sizeof(counts));
+        for(size_t i = 0; i < 64; ++i) counts_[i] = uint32_t(counts[i]);
+        counts_valid_ = true;
         value_ = detail::calculate_estimate(counts, estim_, m(), np_, alpha());
     }
     ssize_t printf(std::FILE *fp) const noexcept {
@@ -1076,7 +1087,8 @@ public:
                          reinterpret_cast<uint8_t *>(this) + sizeof(*this),
                          reinterpret_cast<uint8_t *>(std::addressof(o)));
     }
-    hllbase_t(const hllbase_t &other): core_(other.core_), value_(other.value_), np_(other.np_),
+    hllbase_t(const hllbase_t &other): core_(other.core_), value_(other.value_), counts_(other.counts_),
+        counts_valid_(other.counts_valid_), np_(other.np_),
         estim_(other.estim_), jestim_(other.jestim_), hf_(other.hf_)
     {
 #if LZ_COUNTER
@@ -1091,6 +1103,7 @@ public:
         np_ = other.np_;
         value_ = other.value_;
         counts_ = other.counts_;
+        counts_valid_ = other.counts_valid_;
         estim_ = other.estim_;
         jestim_ = other.jestim_;
         hf_ = other.hf_;
@@ -1231,6 +1244,7 @@ public:
         jestim_ = static_cast<JointEstimationMethod>(bf[2]);
         CR(fp, &np_, sizeof(np_));
         CR(fp, &value_, sizeof(value_));
+        counts_valid_ = false; // the file stores the estimate, not the histogram
         core_.resize(m());
         CR(fp, core_.data(), (core_.size() * sizeof(core_[0])));
         csum();
@@ -1271,6 +1285,7 @@ public:
 #endif
         CHRE(fileno, &np_, sizeof(np_));
         CHRE(fileno, &value_, sizeof(value_));
+        counts_valid_ = false; // the file stores the estimate, not the histogram
         core_.resize(m());
         CHRE(fileno, core_.data(), core_.size());
 #undef CHRE
