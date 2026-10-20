@@ -1075,15 +1075,23 @@ public:
         occ_dir_.rebuild(occ_w(), occ_words_);
         runend_dir_.rebuild(re_w(), runend_words_);
     }
-    // multiset-union of counters (identical parameters): reinsert all
-    // (home, rem, cnt) entries of the SMALLER into a copy of the LARGER.
+    // multiset-union of counters (matching q): reinsert all (home, rem,
+    // cnt) entries of the SMALLER into a copy of the LARGER. In the
+    // truncated-remainder mode the stored width rs_ depends on how often a
+    // filter grew, so two filters at the same q can store different
+    // widths. The destination is then the side with the narrower rs_: the
+    // wider side's remainders truncate exactly (frs keeps their top bits),
+    // whereas re-embedding a narrower remainder into a wider store would
+    // invent zero low bits and lose those keys.
     cqfbase_t &operator+=(const cqfbase_t &o) {
         if(q_ != o.q_ || r_ != o.r_)
             throw std::invalid_argument(std::string("[cqf] merge requires matching q (") + std::to_string(q_) + " vs " + std::to_string(o.q_) + ")");
         if(o.used_ == 0) return *this;
         if(used_ == 0) {*this = o; return *this;}
         const cqfbase_t *small = &o, *large = this;
-        if(o.used_ > used_) std::swap(small, large);
+        if(rs_ != o.rs_) {
+            if(o.rs_ < rs_) std::swap(small, large);
+        } else if(o.used_ > used_) std::swap(small, large);
         cqfbase_t dst(*large);
         for(uint64_t i = 0; i < small->nslots_; ++i) {
             if(small->cnt(i)) {
