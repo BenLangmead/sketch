@@ -1719,12 +1719,13 @@ private:
         live_[b] = uint16_t(int(live_[b]) + d);
         rollup_[b / SUPER].fetch_add(uint32_t(d), std::memory_order_relaxed);
     }
-    // VQF S6.3 pattern, adapted: block locks live in their own cache-line
-    // padded array (the live word stays a plain counter); a spin-CAS with
-    // an acquire fence, release on unlock. A non-full block always has
-    // its lock available (live <= BLK).
-    void lock_block(uint64_t b) const {
-        std::atomic<uint32_t> &w = locks_[(b / SUPER) * LOCK_PAD];
+    // VQF S6.3 pattern, adapted: one lock per superblock, in its own
+    // cache-line padded array (the live word stays a plain counter); a
+    // spin-CAS with an acquire fence, release on unlock. The lock is not
+    // reentrant, so a caller that needs two blocks must lock their
+    // superblocks (lock_super), once each, in increasing order.
+    void lock_super(uint64_t sb) const {
+        std::atomic<uint32_t> &w = locks_[sb * LOCK_PAD];
         uint32_t exp = 0;
         unsigned spins = 0;
         while(!w.compare_exchange_weak(exp, 1, std::memory_order_acquire, std::memory_order_relaxed)) {
@@ -1732,9 +1733,11 @@ private:
             if(++spins > 64) { std::this_thread::yield(); spins = 0; } // oversubscribed cores: don't starve the holder
         }
     }
-    void unlock_block(uint64_t b) const {
-        locks_[(b / SUPER) * LOCK_PAD].store(0, std::memory_order_release);
+    void unlock_super(uint64_t sb) const {
+        locks_[sb * LOCK_PAD].store(0, std::memory_order_release);
     }
+    void lock_block(uint64_t b) const {lock_super(b / SUPER);}
+    void unlock_block(uint64_t b) const {unlock_super(b / SUPER);}
 public:
     using key_type = uint64_t;
     using mapped_type = uint64_t;
@@ -1972,9 +1975,10 @@ public:
         bump_live(target, 1); ++used_;
     }
 
-    // ---- concurrent insert (item 6). VQF S6.3 pattern: the block lock
-    // lives in the live word's top bit; the shortcut path takes ONE
-    // block lock, the two-choice path takes both in increasing order;
+    // ---- concurrent insert (item 6). VQF S6.3 pattern: blocks are
+    // locked through their superblock's lock; the shortcut path takes ONE
+    // lock, the two-choice path takes the locks of both candidate
+    // superblocks in increasing order (one lock when they coincide);
     // grow runs under an exclusive table mutex. Readers (count/contains,
     // range, iterators) stay lock-free: a slot write is a single word
     // store, so a racing reader sees either absence or a complete slot.
@@ -2023,8 +2027,10 @@ public:
                     }
                     unlock_block(b1);
                     const uint64_t blo = std::min(b1, b2), bhi = std::max(b1, b2);
-                    lock_block(blo);
-                    if(bhi != blo) lock_block(bhi);
+                    // two blocks of one superblock share a lock: take it once
+                    const uint64_t slo = blo / SUPER, shi = bhi / SUPER;
+                    lock_super(slo);
+                    if(shi != slo) lock_super(shi);
                     bool placed = false;
                     if(block_find(b1, hv, pos)) { // raced insert landed meanwhile
                         const uint64_t i = (b1 << BLK_SHIFT) + pos;
@@ -2049,8 +2055,8 @@ public:
                             placed = true;
                         }
                     }
-                    if(bhi != blo) unlock_block(bhi);
-                    unlock_block(blo);
+                    if(shi != slo) unlock_super(shi);
+                    unlock_super(slo);
                     if(placed) return;
                     need_grow = true; // both full
                 }
