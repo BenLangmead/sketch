@@ -58,6 +58,7 @@
 #include <algorithm>
 #include <atomic>
 #include <iterator>
+#include <mutex>
 #include <shared_mutex>
 #include <thread>
 
