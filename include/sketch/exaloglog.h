@@ -82,6 +82,24 @@ class exaloglogbase_t {
 
     static constexpr uint32_t min_p() {return 2;}
     static constexpr uint32_t max_t() {return 24;} // t + p <= 26 (reference)
+
+    // set (t, d, p) and every field derived from them, and allocate zeroed
+    // registers; the constructor and read() both go through here so the
+    // derived masks can never disagree with the parameters
+    void set_params(uint8_t t, uint8_t d, uint32_t np) {
+        t_ = t; d_ = d; np_ = np;
+        rb_ = regbits(t_, d_);
+        mask_ = (rb_ == 64) ? ~uint64_t(0): ((uint64_t(1) << rb_) - 1);
+        // hoisted out of add(): the index/update-value decompositions use
+        // them on every insertion (shift-by-runtime-value is not free)
+        idxmask_ = ((uint64_t(1) << t_) << np_) - 1;
+        tmask_ = (uint64_t(1) << t_) - 1;
+        // +16 bytes of padding so that register access can always go
+        // through (unaligned, memcpy-based) 8-byte accesses, including the
+        // two-word access needed when a register wider than 57 bits crosses
+        // an 8-byte boundary.
+        state_.assign(((size_t(m()) * rb_) >> 3) + 16, 0);
+    }
 public:
     using final_type = exaloglogbase_t<HashStruct>;
     using HashType = HashStruct;
@@ -104,17 +122,7 @@ public:
         if(t > max_t()) throw std::invalid_argument(std::string("[exaloglog] t must be in [0, ") + std::to_string(max_t()) + "]");
         if(d > max_d(t)) throw std::invalid_argument(std::string("[exaloglog] d must be in [0, ") + std::to_string(max_d(t)) + "] for t=" + std::to_string(t));
         if(np < min_p() || np > max_p(t)) throw std::invalid_argument(std::string("[exaloglog] p must be in [2, ") + std::to_string(max_p(t)) + "] for t=" + std::to_string(t));
-        rb_ = regbits(t_, d_);
-        mask_ = (rb_ == 64) ? ~uint64_t(0): ((uint64_t(1) << rb_) - 1);
-        // hoisted out of add(): the index/update-value decompositions use
-        // them on every insertion (shift-by-runtime-value is not free)
-        idxmask_ = ((uint64_t(1) << t_) << np_) - 1;
-        tmask_ = (uint64_t(1) << t_) - 1;
-        // +16 bytes of padding so that register access can always go
-        // through (unaligned, memcpy-based) 8-byte accesses, including the
-        // two-word access needed when a register wider than 57 bits crosses
-        // an 8-byte boundary.
-        state_.assign(((size_t(m()) * rb_) >> 3) + 16, 0);
+        set_params(t, d, np);
     }
     // Paper-recommended default: t=2, d=20 (28-bit packed registers, MVP 3.67).
     explicit exaloglogbase_t(uint32_t np): exaloglogbase_t(2, 20, np) {}
@@ -440,13 +448,7 @@ public:
         const uint32_t np = header[2];
         if(t > max_t() || d > max_d(t) || np < min_p() || np > max_p(t))
             throw std::runtime_error("[exaloglog] invalid stored parameters");
-        if(t != t_ || d != d_ || np != np_) {
-            // rebuild state for the stored parameters
-            t_ = t; d_ = d; np_ = np;
-            rb_ = regbits(t_, d_);
-            mask_ = (rb_ == 64) ? ~uint64_t(0): ((uint64_t(1) << rb_) - 1);
-            state_.assign(((size_t(m()) * rb_) >> 3) + 16, 0);
-        }
+        if(t != t_ || d != d_ || np != np_) set_params(t, d, np); // rebuild for the stored parameters
         CR(fp, state_.data(), packed_size());
         std::memset(state_.data() + packed_size(), 0, state_.size() - packed_size());
 #undef CR
