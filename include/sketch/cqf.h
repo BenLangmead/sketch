@@ -478,6 +478,7 @@ public:
     uint32_t q() const {return q_;}
     uint32_t r() const {return r_;}
     uint64_t nslots() const {return nslots_;}
+    uint64_t xnslots() const {return xnslots_;}     // physical slots, including the tail past nslots
     uint64_t size() const {return used_;}           // distinct keys (live slots)
     bool empty() const {return used_ == 0;}
     double load_factor() const {return double(used_) / double(nslots_);}
@@ -810,6 +811,21 @@ public:
         insert_new_key(hv, 1); // known-absent new home; grows+retries on tail-full
     }
 
+    // slot for the run of a new home fq whose predecessor run (in home
+    // order) ends at after - 1 (after == 0 when fq is the first occupied
+    // home), given rnk = occupied homes before fq. Home-anchored (I1): the
+    // run goes at fq when [after, fq) is empty, so holes stay spread across
+    // the table and a later insert shifts only to the end of its cluster.
+    // If the next home's run starts below fq (it drifted left after
+    // deletions, or its cluster reaches past fq), the new run must precede
+    // it, so it goes at that run's start (the caller shifts it right).
+    uint64_t new_run_pos(uint64_t fq, uint64_t after, uint64_t rnk) const {
+        if(after >= fq) return after;
+        if(rnk >= ndistinct_) return fq; // no later run
+        uint64_t ns = runend_dir_.select1(re_w(), rnk); // end of the next home's run
+        while(ns > after && slot_live(ns - 1) && !re_get(ns - 1)) --ns; // its start
+        return std::min(ns, fq);
+    }
     // ---- bulk load (paper sec 3.5 observation on this rank-ordered core):
     // keys presented in ascending reduced-key order (hv & KEYMASK, i.e.
     // ascending (home, remainder)) have ascending homes, so each new home
@@ -867,9 +883,10 @@ public:
                     break;
                 }
                 const uint64_t rnk = occ_dir_.rank1(occ_w(), fq); // occupied homes before fq
-                const uint64_t pos = cursor != ~uint64_t(0) && rnk == cursor_rnk
+                const uint64_t after = cursor != ~uint64_t(0) && rnk == cursor_rnk
                     ? cursor
                     : rnk == 0 ? 0: runend_dir_.select1(re_w(), rnk - 1) + 1;
+                const uint64_t pos = new_run_pos(fq, after, rnk);
                 if(HEDLEY_UNLIKELY(pos >= xnslots_)) { grow(); cursor = ~uint64_t(0); continue; }
                 if(slot_live(pos)) { // the next home's run starts here: shift it
                     const uint64_t empty = first_empty(pos);
@@ -930,12 +947,13 @@ public:
             const auto [fq, fr] = parts(hv);
             const uint64_t frq = frs(fr);
             if(!occ_get(fq)) {
-                // place the new run right after the previous home's run
-                // (runs are stored in home order table-wide); the shift
-                // stops at the first empty slot, so holes between clusters
-                // keep shifts local
+                // runs are stored in home order table-wide; the new run
+                // goes at its home unless an earlier run already reaches
+                // past it (new_run_pos), and the shift stops at the first
+                // empty slot, so holes between clusters keep shifts local
                 const uint64_t rnk = occ_dir_.rank1(occ_w(), fq); // occupied homes before fq
-                const uint64_t pos = rnk == 0 ? 0: runend_dir_.select1(re_w(), rnk - 1) + 1;
+                const uint64_t after = rnk == 0 ? 0: runend_dir_.select1(re_w(), rnk - 1) + 1;
+                const uint64_t pos = new_run_pos(fq, after, rnk);
                 const uint64_t empty = first_empty(pos);
                 if(HEDLEY_UNLIKELY(empty == ~uint64_t(0))) { grow(); continue; }
                 shift_range_right(pos, empty); // refreshes the runend dir
@@ -1093,7 +1111,7 @@ public:
             if(o.rs_ < rs_) std::swap(small, large);
         } else if(o.used_ > used_) std::swap(small, large);
         cqfbase_t dst(*large);
-        for(uint64_t i = 0; i < small->nslots_; ++i) {
+        for(uint64_t i = 0; i < small->xnslots_; ++i) { // runs may extend past nslots_
             if(small->cnt(i)) {
                 const uint64_t hv = small->key_of_home(i);
                 dst.grow_if_full(); // grow BEFORE decomposing hv with the new r_
@@ -1111,7 +1129,7 @@ public:
     template<size_t KB2, size_t VB2>
     void compose(const cqfbase_t<KB2, VB2, Storage, Hash> &o) {
         if(RSTORE_BITS) throw std::logic_error("[cqf] compose is not supported in truncated-remainder mode");
-        for(uint64_t i = 0; i < o.nslots(); ++i) {
+        for(uint64_t i = 0; i < o.xnslots(); ++i) { // runs may extend past nslots()
             if(o.cnt(i)) {
                 const uint64_t hv = o.key_of_home(i); // KB2-bit reduced key
                 grow_if_full();                       // grow BEFORE decomposing hv with the new r_
