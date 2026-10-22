@@ -26,6 +26,24 @@
 
 #if defined(__AVX512VPOPCNTDQ__)
 #  define popcnt512(x) ::_mm512_popcnt_epi64(x)
+#elif defined(__AVX512F__)
+// Per-64-bit-lane population count for AVX-512 CPUs without VPOPCNTDQ (for example
+// Skylake-SP and Cascade Lake). libpopcnt only uses VPOPCNTDQ for AVX-512, so it does
+// not provide this function.
+static INLINE __m512i popcnt512(__m512i v) noexcept {
+#if defined(__AVX512BW__)
+    const __m512i m1 = _mm512_set1_epi8(0x55), m2 = _mm512_set1_epi8(0x33), m4 = _mm512_set1_epi8(0x0F);
+    const __m512i t1 = _mm512_sub_epi8(v, _mm512_and_si512(_mm512_srli_epi16(v, 1), m1));
+    const __m512i t2 = _mm512_add_epi8(_mm512_and_si512(t1, m2), _mm512_and_si512(_mm512_srli_epi16(t1, 2), m2));
+    const __m512i t3 = _mm512_and_si512(_mm512_add_epi8(t2, _mm512_srli_epi16(t2, 4)), m4);
+    return _mm512_sad_epu8(t3, _mm512_setzero_si512());
+#else
+    alignas(64) uint64_t lanes[8];
+    _mm512_store_si512(reinterpret_cast<__m512i *>(lanes), v);
+    for(auto &x: lanes) x = __builtin_popcountll(x);
+    return _mm512_load_si512(reinterpret_cast<const __m512i *>(lanes));
+#endif
+}
 #endif
 namespace sketch {
 inline namespace integral {
